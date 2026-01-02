@@ -121,14 +121,64 @@ async function checkAndBlockVideo() {
 
   // FIRST: Wait for channel information to load (ALWAYS)
   console.log("YouTube Gatekeeper: Waiting for channel information...");
+
+  // Wait for the page to update (YouTube SPA needs time to replace old content)
+  await new Promise((resolve) => setTimeout(resolve, 500));
   await waitForElement("ytd-channel-name", 5000);
 
-  // Get channel handle from the page
-  const channelHandle = getChannelHandleFromPage();
+  // Try to get channel handle with retries and validation
+  let channelHandle: string | null = null;
+  let lastHandle: string | null = null;
+  let retries = 0;
+  let stableCount = 0;
+
+  // Keep checking until we get the same handle twice in a row (means DOM is stable)
+  while (stableCount < 2 && retries < 5) {
+    await new Promise((resolve) => setTimeout(resolve, 800)); // Wait 800ms between checks
+    channelHandle = getChannelHandleFromPage();
+
+    if (channelHandle === lastHandle && channelHandle !== null) {
+      stableCount++;
+    } else {
+      stableCount = 0;
+    }
+
+    lastHandle = channelHandle;
+    retries++;
+
+    if (!channelHandle || stableCount < 2) {
+      console.log(
+        `YouTube Gatekeeper: Channel detection attempt ${retries}/5, handle: ${channelHandle || "none"}, stable: ${stableCount}/2`,
+      );
+    }
+  }
+
   console.log(
     "YouTube Gatekeeper: Channel handle detected:",
     channelHandle || "none",
   );
+
+  // Debug: Log what elements we found
+  if (!channelHandle) {
+    const channelNameEl = document.querySelector("ytd-channel-name");
+    const ownerEl = document.querySelector("#owner");
+    const allChannelLinks = document.querySelectorAll('a[href*="@"]');
+    console.log(
+      "YouTube Gatekeeper: Debug - ytd-channel-name exists?",
+      !!channelNameEl,
+    );
+    console.log("YouTube Gatekeeper: Debug - #owner exists?", !!ownerEl);
+    console.log(
+      "YouTube Gatekeeper: Debug - Links with @ found:",
+      allChannelLinks.length,
+    );
+    if (allChannelLinks.length > 0) {
+      console.log(
+        "YouTube Gatekeeper: Debug - First @ link:",
+        (allChannelLinks[0] as HTMLAnchorElement).href,
+      );
+    }
+  }
 
   // SECOND: Check if channel is whitelisted (do this BEFORE checking individual video)
   if (channelHandle) {

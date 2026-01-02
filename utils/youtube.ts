@@ -75,11 +75,23 @@ export function getChannelHandleFromPage(): string | null {
     const links = videoInfo.querySelectorAll('a[href*="@"]');
     for (const link of links) {
       const href = (link as HTMLAnchorElement).href;
-      if (href.includes("youtube.com/@")) {
+      if (href.includes("youtube.com/@") || href.includes("m.youtube.com/@")) {
         const match = href.match(/@[\w-]+/);
         if (match) {
           return match[0];
         }
+      }
+    }
+  }
+
+  // Method 5: Search ALL links on the page with @ (fallback)
+  const allLinks = document.querySelectorAll('a[href*="@"]');
+  for (const link of allLinks) {
+    const href = (link as HTMLAnchorElement).href;
+    if (href.includes("youtube.com/@") || href.includes("m.youtube.com/@")) {
+      const match = href.match(/@[\w-]+/);
+      if (match) {
+        return match[0];
       }
     }
   }
