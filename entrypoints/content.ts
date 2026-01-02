@@ -2,12 +2,16 @@ import {
   isVideoAllowed,
   isChannelWhitelisted,
   allowVideo,
+  getWhitelistedChannels,
 } from "@/utils/storage";
 import {
   getVideoIdFromUrl,
   getChannelHandleFromPage,
   waitForElement,
+  waitForSidebar,
   isVideoPage,
+  getChannelHandleFromVideoElement,
+  getSidebarVideoElements,
 } from "@/utils/youtube";
 
 export default defineContentScript({
@@ -15,11 +19,34 @@ export default defineContentScript({
   main() {
     // Inject CSS to hide all videos by default
     injectBlockingCSS();
+    // Inject CSS for sidebar filtering
+    injectSidebarFilterCSS();
     console.log("YouTube Gatekeeper: Content script loaded");
 
     // Check on initial page load
     if (isVideoPage()) {
       checkAndBlockVideo();
+
+      // Filter sidebar recommendations (wait longer for DOM to fully load)
+      waitForSidebar(10000)
+        .then((container) => {
+          console.log(
+            "YouTube Gatekeeper: Sidebar container found, waiting for content to load",
+          );
+          if (container) {
+            console.log(
+              "YouTube Gatekeeper: About to call filterSidebarRecommendations in 100ms",
+            );
+            // Start filtering immediately, retry logic will handle delays
+            setTimeout(() => {
+              console.log("YouTube Gatekeeper: Timeout fired, calling filter");
+              filterSidebarRecommendations();
+            }, 100);
+          }
+        })
+        .catch(() =>
+          console.log("YouTube Gatekeeper: Sidebar not found on initial load"),
+        );
     }
 
     // Listen for URL changes (YouTube is a SPA)
@@ -39,6 +66,42 @@ export default defineContentScript({
           const videoId = getVideoIdFromUrl(currentUrl);
           if (videoId) {
             checkAndBlockVideo();
+
+            // Filter sidebar recommendations on navigation
+            waitForSidebar(5000)
+              .then((container) => {
+                console.log(
+                  "YouTube Gatekeeper: Sidebar container found on navigation",
+                );
+                if (container) {
+                  console.log(
+                    "YouTube Gatekeeper: Container is truthy on navigation, scheduling filter",
+                  );
+                  // Start filtering immediately, retry logic will handle delays
+                  setTimeout(() => {
+                    console.log(
+                      "YouTube Gatekeeper: Navigation timeout fired, calling filter",
+                    );
+                    try {
+                      filterSidebarRecommendations();
+                    } catch (error) {
+                      console.error(
+                        "YouTube Gatekeeper: Error calling filter:",
+                        error,
+                      );
+                    }
+                  }, 100);
+                } else {
+                  console.log(
+                    "YouTube Gatekeeper: Container is falsy on navigation!",
+                  );
+                }
+              })
+              .catch(() =>
+                console.log(
+                  "YouTube Gatekeeper: Sidebar not found on navigation",
+                ),
+              );
           }
         } else {
           removeOverlay();
@@ -68,6 +131,40 @@ export default defineContentScript({
     videoObserver.observe(document.body, {
       childList: true,
       subtree: true,
+    });
+
+    // Observer for sidebar content changes (scroll loading)
+    let sidebarFilterTimeout: number | null = null;
+    const sidebarObserver = new MutationObserver((mutations) => {
+      const sidebarAffected = mutations.some((mutation) => {
+        const target = mutation.target as Element;
+        return (
+          target.closest?.("ytd-watch-next-secondary-results-renderer") ||
+          target.closest?.("ytm-watch-next-secondary-results-renderer") ||
+          target.closest?.("#related") ||
+          target.closest?.("#secondary")
+        );
+      });
+
+      if (sidebarAffected && isVideoPage()) {
+        // Debounce filtering
+        if (sidebarFilterTimeout !== null) {
+          clearTimeout(sidebarFilterTimeout);
+        }
+        sidebarFilterTimeout = window.setTimeout(() => {
+          filterSidebarRecommendations();
+        }, 300);
+      }
+    });
+
+    // Start observing when sidebar loads
+    waitForSidebar(5000).then((container) => {
+      if (container) {
+        sidebarObserver.observe(container, {
+          childList: true,
+          subtree: true,
+        });
+      }
     });
   },
 });
@@ -453,4 +550,153 @@ function unblurPage() {
     player.style.filter = "";
     player.style.pointerEvents = "";
   }
+}
+
+// Sidebar Recommendation Filtering
+
+function injectSidebarFilterCSS() {
+  if (!document.getElementById("gatekeeper-sidebar-filter-style")) {
+    const style = document.createElement("style");
+    style.id = "gatekeeper-sidebar-filter-style";
+    style.textContent = `
+      ytd-compact-video-renderer.gatekeeper-hidden {
+        display: none !important;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+}
+
+async function filterSidebarRecommendations(retryCount = 0): Promise<void> {
+  console.log(
+    `YouTube Gatekeeper: filterSidebarRecommendations called (retry: ${retryCount})`,
+  );
+  try {
+    // Get whitelisted channels from storage
+    const whitelistedChannels = await getWhitelistedChannels();
+
+    // If no whitelist configured, don't filter sidebar
+    if (whitelistedChannels.length === 0) {
+      console.log(
+        "YouTube Gatekeeper: No channels whitelisted, sidebar filtering disabled",
+      );
+      return;
+    }
+
+    // Get all sidebar video elements
+    const videos = getSidebarVideoElements();
+
+    if (videos.length === 0) {
+      // Retry up to 5 times with 500ms delay
+      if (retryCount < 5) {
+        console.log(
+          `YouTube Gatekeeper: No videos found, retrying in 500ms (attempt ${retryCount + 1}/5)`,
+        );
+        setTimeout(() => filterSidebarRecommendations(retryCount + 1), 500);
+        return;
+      }
+      console.log(
+        "YouTube Gatekeeper: No sidebar videos found after 5 retries",
+      );
+      return;
+    }
+
+    console.log(
+      `YouTube Gatekeeper: Filtering ${videos.length} sidebar recommendations`,
+    );
+    console.log(
+      "YouTube Gatekeeper: Whitelisted channels:",
+      whitelistedChannels,
+    );
+
+    let whitelistedCount = 0;
+
+    // Process each video element
+    for (const video of videos) {
+      // Skip if already processed
+      if (video.hasAttribute("data-gatekeeper-checked")) {
+        const isWhitelisted =
+          video.getAttribute("data-gatekeeper-whitelisted") === "true";
+        if (isWhitelisted) whitelistedCount++;
+        continue;
+      }
+
+      // Extract channel handle
+      const channelHandle = getChannelHandleFromVideoElement(video);
+
+      console.log(
+        `YouTube Gatekeeper: Video channel detected: ${channelHandle || "NONE"}`,
+      );
+
+      // Check if whitelisted (default to false if can't determine channel)
+      const isWhitelisted = channelHandle
+        ? whitelistedChannels.includes(channelHandle)
+        : false;
+
+      console.log(
+        `YouTube Gatekeeper: ${channelHandle || "unknown"} is ${isWhitelisted ? "WHITELISTED" : "NOT whitelisted"}`,
+      );
+
+      // Mark as processed
+      video.setAttribute("data-gatekeeper-checked", "true");
+      video.setAttribute("data-gatekeeper-whitelisted", String(isWhitelisted));
+      video.setAttribute("data-gatekeeper-channel", channelHandle || "unknown");
+
+      if (isWhitelisted) {
+        whitelistedCount++;
+      }
+    }
+
+    // Apply filtering based on whitelist count
+    if (whitelistedCount > 0) {
+      // At least one whitelisted video - hide non-whitelisted
+      applySidebarFiltering(true);
+      console.log(
+        `YouTube Gatekeeper: Showing ${whitelistedCount}/${videos.length} whitelisted recommendations`,
+      );
+    } else {
+      // No whitelisted videos found - show all (fallback)
+      applySidebarFiltering(false);
+      console.log(
+        "YouTube Gatekeeper: No whitelisted recommendations found, showing all",
+      );
+    }
+  } catch (error) {
+    console.error("YouTube Gatekeeper: Error filtering sidebar:", error);
+  }
+}
+
+function applySidebarFiltering(hideNonWhitelisted: boolean): void {
+  const videos = getSidebarVideoElements();
+
+  console.log(
+    `YouTube Gatekeeper: Applying filtering - hideNonWhitelisted: ${hideNonWhitelisted}`,
+  );
+
+  let hiddenCount = 0;
+  let shownCount = 0;
+
+  for (const video of videos) {
+    const isWhitelisted =
+      video.getAttribute("data-gatekeeper-whitelisted") === "true";
+    const channelHandle = video.getAttribute("data-gatekeeper-channel");
+
+    if (hideNonWhitelisted && !isWhitelisted) {
+      video.classList.add("gatekeeper-hidden");
+      hiddenCount++;
+      console.log(
+        `YouTube Gatekeeper: HIDING video from channel: ${channelHandle}`,
+      );
+    } else {
+      video.classList.remove("gatekeeper-hidden");
+      shownCount++;
+      console.log(
+        `YouTube Gatekeeper: SHOWING video from channel: ${channelHandle}`,
+      );
+    }
+  }
+
+  console.log(
+    `YouTube Gatekeeper: Filter applied - ${hiddenCount} hidden, ${shownCount} shown`,
+  );
 }
