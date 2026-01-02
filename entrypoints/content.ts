@@ -13,6 +13,8 @@ import {
 export default defineContentScript({
   matches: ["*://*.youtube.com/*"],
   main() {
+    // Inject CSS to hide all videos by default
+    injectBlockingCSS();
     console.log("YouTube Gatekeeper: Content script loaded");
 
     // Check on initial page load
@@ -26,17 +28,22 @@ export default defineContentScript({
       const currentUrl = location.href;
       if (currentUrl !== lastUrl) {
         lastUrl = currentUrl;
+
+        // ALWAYS block first on ANY URL change
+        blockVideoDisplay();
+        pauseVideo();
+        startVideoPauser();
+
         if (isVideoPage()) {
-          // Immediately block on navigation
+          // Then check permissions
           const videoId = getVideoIdFromUrl(currentUrl);
           if (videoId) {
-            // Block immediately, then check permissions
-            pauseVideo();
-            startVideoPauser();
             checkAndBlockVideo();
           }
         } else {
           removeOverlay();
+          stopVideoPauser();
+          allowVideoDisplay();
         }
       }
     });
@@ -65,46 +72,86 @@ export default defineContentScript({
   },
 });
 
+// CSS to hide videos globally
+let blockingStyleElement: HTMLStyleElement | null = null;
+
+function injectBlockingCSS() {
+  if (!blockingStyleElement) {
+    blockingStyleElement = document.createElement("style");
+    blockingStyleElement.id = "youtube-gatekeeper-block-style";
+    blockingStyleElement.textContent = `
+      video {
+        display: none !important;
+        visibility: hidden !important;
+        opacity: 0 !important;
+      }
+    `;
+    document.head.appendChild(blockingStyleElement);
+  }
+}
+
+function allowVideoDisplay() {
+  if (blockingStyleElement) {
+    blockingStyleElement.remove();
+    blockingStyleElement = null;
+  }
+}
+
+function blockVideoDisplay() {
+  injectBlockingCSS();
+}
+
 async function checkAndBlockVideo() {
   const videoId = getVideoIdFromUrl(window.location.href);
 
   if (!videoId) {
     console.log("YouTube Gatekeeper: No video ID found");
+    stopVideoPauser();
     return;
   }
 
   console.log("YouTube Gatekeeper: Checking video:", videoId);
 
-  // Immediately pause video while checking permissions
-  pauseVideo();
-
-  // Set up continuous pausing to prevent any playback
-  startVideoPauser();
-
-  // Check if video is already allowed
-  const videoAllowed = await isVideoAllowed(videoId);
-  if (videoAllowed) {
-    console.log("YouTube Gatekeeper: Video is allowed");
-    stopVideoPauser();
-    removeOverlay();
-    resumeVideo();
-    return;
+  // Video pauser should already be running from navigation detection
+  // Just ensure it's active
+  if (videoPauserInterval === null) {
+    pauseVideo();
+    startVideoPauser();
   }
 
-  // Wait for channel information to load
-  await waitForElement("ytd-channel-name", 3000);
+  // FIRST: Wait for channel information to load (ALWAYS)
+  console.log("YouTube Gatekeeper: Waiting for channel information...");
+  await waitForElement("ytd-channel-name", 5000);
 
-  // Check if channel is whitelisted
+  // Get channel handle from the page
   const channelHandle = getChannelHandleFromPage();
+  console.log(
+    "YouTube Gatekeeper: Channel handle detected:",
+    channelHandle || "none",
+  );
+
+  // SECOND: Check if channel is whitelisted (do this BEFORE checking individual video)
   if (channelHandle) {
     const channelAllowed = await isChannelWhitelisted(channelHandle);
     if (channelAllowed) {
       console.log("YouTube Gatekeeper: Channel is whitelisted:", channelHandle);
       stopVideoPauser();
       removeOverlay();
+      allowVideoDisplay();
       resumeVideo();
       return;
     }
+  }
+
+  // THIRD: Check if this specific video is allowed
+  const videoAllowed = await isVideoAllowed(videoId);
+  if (videoAllowed) {
+    console.log("YouTube Gatekeeper: Video is allowed");
+    stopVideoPauser();
+    removeOverlay();
+    allowVideoDisplay();
+    resumeVideo();
+    return;
   }
 
   // Video is not allowed - show overlay
@@ -114,6 +161,9 @@ async function checkAndBlockVideo() {
 
 function showOverlay(videoId: string, channelHandle: string | null) {
   removeOverlay(); // Remove any existing overlay
+
+  // Get fresh channel handle (in case DOM updated)
+  const freshChannelHandle = getChannelHandleFromPage() || channelHandle;
 
   // Pause the video
   pauseVideo();
@@ -167,9 +217,9 @@ function showOverlay(videoId: string, channelHandle: string | null) {
     line-height: 1.5;
   `;
 
-  if (channelHandle) {
+  if (freshChannelHandle) {
     const channelInfo = document.createElement("p");
-    channelInfo.textContent = `Channel: ${channelHandle}`;
+    channelInfo.textContent = `Channel: ${freshChannelHandle}`;
     channelInfo.style.cssText = `
       margin: 0 0 20px 0;
       font-size: 14px;
@@ -214,6 +264,7 @@ function showOverlay(videoId: string, channelHandle: string | null) {
     stopVideoPauser();
     removeOverlay();
     unblurPage();
+    allowVideoDisplay();
     resumeVideo();
     console.log("YouTube Gatekeeper: Video permitted:", videoId);
   };
@@ -265,14 +316,17 @@ function startVideoPauser() {
   // Stop any existing interval
   stopVideoPauser();
 
-  // Continuously pause the video every 100ms to prevent playback
+  // Continuously pause the video every 50ms to prevent playback
   videoPauserInterval = window.setInterval(() => {
     const video = document.querySelector("video") as HTMLVideoElement;
-    if (video && !video.paused) {
-      video.pause();
-      video.currentTime = 0; // Reset to beginning
+    if (video) {
+      if (!video.paused) {
+        video.pause();
+      }
+      video.currentTime = 0; // Always reset to beginning
+      video.muted = true; // Ensure muted
     }
-  }, 100);
+  }, 50);
 }
 
 function stopVideoPauser() {
