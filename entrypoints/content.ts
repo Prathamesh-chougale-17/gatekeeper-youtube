@@ -27,7 +27,14 @@ export default defineContentScript({
       if (currentUrl !== lastUrl) {
         lastUrl = currentUrl;
         if (isVideoPage()) {
-          checkAndBlockVideo();
+          // Immediately block on navigation
+          const videoId = getVideoIdFromUrl(currentUrl);
+          if (videoId) {
+            // Block immediately, then check permissions
+            pauseVideo();
+            startVideoPauser();
+            checkAndBlockVideo();
+          }
         } else {
           removeOverlay();
         }
@@ -35,6 +42,23 @@ export default defineContentScript({
     });
 
     observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+    });
+
+    // Also listen to video element directly to catch early playback attempts
+    const videoObserver = new MutationObserver(() => {
+      const video = document.querySelector("video");
+      if (video && !video.hasAttribute("data-gatekeeper-watched")) {
+        video.setAttribute("data-gatekeeper-watched", "true");
+        if (isVideoPage()) {
+          pauseVideo();
+          startVideoPauser();
+        }
+      }
+    });
+
+    videoObserver.observe(document.body, {
       childList: true,
       subtree: true,
     });
@@ -265,8 +289,11 @@ function pauseVideo() {
     video.pause();
     video.currentTime = 0; // Reset to beginning
     video.style.visibility = "hidden";
+    video.muted = true; // Also mute to prevent any audio
 
-    // Prevent play events
+    // Prevent play events (remove first to avoid duplicates)
+    video.removeEventListener("play", preventPlay);
+    video.removeEventListener("playing", preventPlay);
     video.addEventListener("play", preventPlay);
     video.addEventListener("playing", preventPlay);
   }
@@ -284,6 +311,7 @@ function resumeVideo() {
   const video = document.querySelector("video") as HTMLVideoElement;
   if (video) {
     video.style.visibility = "visible";
+    video.muted = false; // Unmute
 
     // Remove play prevention listeners
     video.removeEventListener("play", preventPlay);
