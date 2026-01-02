@@ -1,26 +1,66 @@
 import { useState, useEffect } from "react";
-import { getAllowedVideos, getWhitelistedChannels } from "@/utils/storage";
+import {
+  getAllowedVideos,
+  getWhitelistedChannels,
+  removeAllowedVideo,
+  removeWhitelistedChannel,
+  whitelistChannel,
+  clearAllowedVideos,
+  clearWhitelistedChannels,
+} from "@/utils/storage";
 import "./App.css";
 
 function App() {
-  const [allowedCount, setAllowedCount] = useState(0);
-  const [channelCount, setChannelCount] = useState(0);
+  const [allowedVideos, setAllowedVideos] = useState<string[]>([]);
+  const [whitelistedChannels, setWhitelistedChannels] = useState<string[]>([]);
+  const [newChannel, setNewChannel] = useState("");
   const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState<"channels" | "videos">("channels");
 
   useEffect(() => {
-    loadStats();
+    loadData();
   }, []);
 
-  const loadStats = async () => {
+  const loadData = async () => {
+    setLoading(true);
     const videos = await getAllowedVideos();
     const channels = await getWhitelistedChannels();
-    setAllowedCount(videos.length);
-    setChannelCount(channels.length);
+    setAllowedVideos(videos);
+    setWhitelistedChannels(channels);
     setLoading(false);
   };
 
-  const openOptions = () => {
-    browser.runtime.openOptionsPage();
+  const handleRemoveVideo = async (videoId: string) => {
+    await removeAllowedVideo(videoId);
+    await loadData();
+  };
+
+  const handleRemoveChannel = async (channelHandle: string) => {
+    await removeWhitelistedChannel(channelHandle);
+    await loadData();
+  };
+
+  const handleAddChannel = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (newChannel.trim()) {
+      await whitelistChannel(newChannel.trim());
+      setNewChannel("");
+      await loadData();
+    }
+  };
+
+  const handleClearVideos = async () => {
+    if (confirm("Are you sure you want to clear all allowed videos?")) {
+      await clearAllowedVideos();
+      await loadData();
+    }
+  };
+
+  const handleClearChannels = async () => {
+    if (confirm("Are you sure you want to clear all whitelisted channels?")) {
+      await clearWhitelistedChannels();
+      await loadData();
+    }
   };
 
   if (loading) {
@@ -37,24 +77,89 @@ function App() {
         <h1>🔒 YouTube Gatekeeper</h1>
       </header>
 
-      <div className="stats-grid">
-        <div className="stat-card">
-          <div className="stat-value">{channelCount}</div>
-          <div className="stat-label">Whitelisted Channels</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-value">{allowedCount}</div>
-          <div className="stat-label">Allowed Videos</div>
-        </div>
+      <div className="tabs">
+        <button
+          className={`tab ${activeTab === "channels" ? "active" : ""}`}
+          onClick={() => setActiveTab("channels")}
+        >
+          Channels ({whitelistedChannels.length})
+        </button>
+        <button
+          className={`tab ${activeTab === "videos" ? "active" : ""}`}
+          onClick={() => setActiveTab("videos")}
+        >
+          Videos ({allowedVideos.length})
+        </button>
       </div>
 
-      <button onClick={openOptions} className="options-button">
-        Manage Whitelist
-      </button>
+      {activeTab === "channels" && (
+        <div className="tab-content">
+          <form onSubmit={handleAddChannel} className="add-form">
+            <input
+              type="text"
+              value={newChannel}
+              onChange={(e) => setNewChannel(e.target.value)}
+              placeholder="@ChannelHandle"
+              className="input"
+            />
+            <button type="submit" className="btn-add">
+              Add
+            </button>
+          </form>
 
-      <footer className="popup-footer">
-        <p>Videos require permission unless from whitelisted channels</p>
-      </footer>
+          {whitelistedChannels.length > 0 && (
+            <button onClick={handleClearChannels} className="btn-clear">
+              Clear All Channels
+            </button>
+          )}
+
+          <div className="list">
+            {whitelistedChannels.length === 0 ? (
+              <div className="empty">No whitelisted channels</div>
+            ) : (
+              whitelistedChannels.map((channel) => (
+                <div key={channel} className="list-item">
+                  <span className="item-text">{channel}</span>
+                  <button
+                    onClick={() => handleRemoveChannel(channel)}
+                    className="btn-remove"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+
+      {activeTab === "videos" && (
+        <div className="tab-content">
+          {allowedVideos.length > 0 && (
+            <button onClick={handleClearVideos} className="btn-clear">
+              Clear All Videos
+            </button>
+          )}
+
+          <div className="list">
+            {allowedVideos.length === 0 ? (
+              <div className="empty">No allowed videos</div>
+            ) : (
+              allowedVideos.map((videoId) => (
+                <div key={videoId} className="list-item">
+                  <span className="item-text">{videoId}</span>
+                  <button
+                    onClick={() => handleRemoveVideo(videoId)}
+                    className="btn-remove"
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
