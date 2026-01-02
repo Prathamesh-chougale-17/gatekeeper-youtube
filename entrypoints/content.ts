@@ -51,11 +51,19 @@ async function checkAndBlockVideo() {
 
   console.log("YouTube Gatekeeper: Checking video:", videoId);
 
+  // Immediately pause video while checking permissions
+  pauseVideo();
+
+  // Set up continuous pausing to prevent any playback
+  startVideoPauser();
+
   // Check if video is already allowed
   const videoAllowed = await isVideoAllowed(videoId);
   if (videoAllowed) {
     console.log("YouTube Gatekeeper: Video is allowed");
+    stopVideoPauser();
     removeOverlay();
+    resumeVideo();
     return;
   }
 
@@ -68,7 +76,9 @@ async function checkAndBlockVideo() {
     const channelAllowed = await isChannelWhitelisted(channelHandle);
     if (channelAllowed) {
       console.log("YouTube Gatekeeper: Channel is whitelisted:", channelHandle);
+      stopVideoPauser();
       removeOverlay();
+      resumeVideo();
       return;
     }
   }
@@ -81,6 +91,12 @@ async function checkAndBlockVideo() {
 function showOverlay(videoId: string, channelHandle: string | null) {
   removeOverlay(); // Remove any existing overlay
 
+  // Pause the video
+  pauseVideo();
+
+  // Blur the background page content
+  blurPage();
+
   const overlay = document.createElement("div");
   overlay.id = "youtube-gatekeeper-overlay";
   overlay.style.cssText = `
@@ -90,6 +106,8 @@ function showOverlay(videoId: string, channelHandle: string | null) {
     width: 100%;
     height: 100%;
     background: rgba(0, 0, 0, 0.95);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
     z-index: 999999;
     display: flex;
     align-items: center;
@@ -169,7 +187,10 @@ function showOverlay(videoId: string, channelHandle: string | null) {
   };
   permitButton.onclick = async () => {
     await allowVideo(videoId);
+    stopVideoPauser();
     removeOverlay();
+    unblurPage();
+    resumeVideo();
     console.log("YouTube Gatekeeper: Video permitted:", videoId);
   };
 
@@ -209,5 +230,95 @@ function removeOverlay() {
   const overlay = document.getElementById("youtube-gatekeeper-overlay");
   if (overlay) {
     overlay.remove();
+  }
+  unblurPage();
+  stopVideoPauser();
+}
+
+let videoPauserInterval: number | null = null;
+
+function startVideoPauser() {
+  // Stop any existing interval
+  stopVideoPauser();
+
+  // Continuously pause the video every 100ms to prevent playback
+  videoPauserInterval = window.setInterval(() => {
+    const video = document.querySelector("video") as HTMLVideoElement;
+    if (video && !video.paused) {
+      video.pause();
+      video.currentTime = 0; // Reset to beginning
+    }
+  }, 100);
+}
+
+function stopVideoPauser() {
+  if (videoPauserInterval !== null) {
+    clearInterval(videoPauserInterval);
+    videoPauserInterval = null;
+  }
+}
+
+function pauseVideo() {
+  // Find the video element and pause it
+  const video = document.querySelector("video") as HTMLVideoElement;
+  if (video) {
+    video.pause();
+    video.currentTime = 0; // Reset to beginning
+    video.style.visibility = "hidden";
+
+    // Prevent play events
+    video.addEventListener("play", preventPlay);
+    video.addEventListener("playing", preventPlay);
+  }
+}
+
+function preventPlay(e: Event) {
+  e.preventDefault();
+  e.stopPropagation();
+  const video = e.target as HTMLVideoElement;
+  video.pause();
+}
+
+function resumeVideo() {
+  // Find the video element and make it visible (don't auto-play)
+  const video = document.querySelector("video") as HTMLVideoElement;
+  if (video) {
+    video.style.visibility = "visible";
+
+    // Remove play prevention listeners
+    video.removeEventListener("play", preventPlay);
+    video.removeEventListener("playing", preventPlay);
+  }
+}
+
+function blurPage() {
+  // Blur the main page content
+  const pageContent = document.querySelector("#page-manager") as HTMLElement;
+  if (pageContent) {
+    pageContent.style.filter = "blur(10px)";
+    pageContent.style.pointerEvents = "none";
+  }
+
+  // Also blur the player
+  const player = document.querySelector("#movie_player") as HTMLElement;
+  if (player) {
+    player.style.filter = "blur(10px)";
+    player.style.pointerEvents = "none";
+  }
+}
+
+function unblurPage() {
+  // Remove blur from main page content
+  const pageContent = document.querySelector("#page-manager") as HTMLElement;
+  if (pageContent) {
+    pageContent.style.filter = "";
+    pageContent.style.pointerEvents = "";
+  }
+
+  // Remove blur from player
+  const player = document.querySelector("#movie_player") as HTMLElement;
+  if (player) {
+    player.style.filter = "";
+    player.style.pointerEvents = "";
   }
 }
